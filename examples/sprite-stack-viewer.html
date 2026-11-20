@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sprite Stack Viewer</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Silkscreen&display=swap" rel="stylesheet">
+<style>
+/* Layout idea: a square pixel stage on the left, a narrow control rail on the right, the slice sheet as a strip underneath. */
+:root {
+  --bg: #e6e9e2;
+  --panel: #f4f6f1;
+  --ink: #1c2421;
+  --muted: #5a6660;
+  --line: #c9cfc6;
+  --accent: #1c6f8c;
+  --ground: #b4bcb1;
+  --ground-line: #a4ada1;
+  --font-display: "Silkscreen", "Courier New", monospace;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+    --bg: #161b1e;
+    --panel: #1e2529;
+    --ink: #e4e9e5;
+    --muted: #93a09a;
+    --line: #323c41;
+    --accent: #62bcd9;
+    --ground: #2b3438;
+    --ground-line: #343f44;
+  }
+}
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #161b1e;
+  --panel: #1e2529;
+  --ink: #e4e9e5;
+  --muted: #93a09a;
+  --line: #323c41;
+  --accent: #62bcd9;
+  --ground: #2b3438;
+  --ground-line: #343f44;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--font-body);
+  font-size: 15px;
+  line-height: 1.45;
+}
+.wrap {
+  max-width: 980px;
+  margin: 0 auto;
+  padding: 24px 16px 40px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+header { display: flex; flex-direction: column; gap: 4px; }
+h1 {
+  font-family: var(--font-display);
+  font-weight: 400;
+  font-size: 22px;
+  letter-spacing: 0.02em;
+  margin: 0;
+  text-wrap: balance;
+}
+header p { margin: 0; color: var(--muted); max-width: 65ch; }
+.bench {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 760px) {
+  .bench { grid-template-columns: minmax(0, 1fr); }
+}
+.stage {
+  position: relative;
+  aspect-ratio: 1 / 1;
+  background-color: var(--ground);
+  background-image:
+    linear-gradient(to right, var(--ground-line) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--ground-line) 1px, transparent 1px);
+  background-size: 12.5% 12.5%;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+  touch-action: none;
+  cursor: ew-resize;
+}
+.stage canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+.stage:focus-visible, button:focus-visible, input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.readout {
+  position: absolute;
+  left: 10px;
+  bottom: 8px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 3px 7px;
+  pointer-events: none;
+}
+.rail {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.field { display: flex; flex-direction: column; gap: 6px; }
+.field .top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+}
+label, .label { font-weight: 500; }
+output {
+  font-family: var(--font-mono);
+  font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+}
+.hint { color: var(--muted); font-size: 13px; margin: 0; }
+input[type="range"] { width: 100%; accent-color: var(--accent); margin: 0; }
+.row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+button {
+  font: inherit;
+  font-weight: 500;
+  color: var(--ink);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); }
+.check { display: flex; gap: 8px; align-items: center; }
+.check input { accent-color: var(--accent); width: 16px; height: 16px; margin: 0; }
+.swatch {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border-radius: 4px;
+  border: 1px solid var(--line);
+}
+.swatch[aria-pressed="true"] { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sheet {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+h2 { font-size: 15px; font-weight: 600; margin: 0; }
+.sheet-scroll { overflow-x: auto; }
+.sheet-scroll canvas {
+  display: block;
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+  background: var(--ground);
+  border-radius: 3px;
+}
+.ticks {
+  display: grid;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--muted);
+  text-align: center;
+  margin-top: 4px;
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Sprite Stack Viewer</h1>
+    <p id="intro">Flat slices, each drawn 1 px above the last and turned by the same angle. Drag the stage to turn it.</p>
+  </header>
+
+  <div class="bench">
+    <div class="stage" id="stage" tabindex="0" role="img" aria-label="Sprite-stacked object. Drag or use the left and right arrow keys to turn it.">
+      <canvas id="view" width="128" height="128"></canvas>
+      <div class="readout" id="readout">covers 0 x 0 px</div>
+    </div>
+
+    <div class="rail">
+      <div class="field">
+        <span class="label">Object</span>
+        <div class="row" id="objects"></div>
+      </div>
+
+      <div class="field">
+        <div class="top"><label for="turn">Turn</label><output id="turnOut" for="turn">0°</output></div>
+        <input type="range" id="turn" min="0" max="359" step="1" value="0">
+        <div class="row">
+          <button type="button" id="spin" aria-pressed="true">Spin</button>
+          <button type="button" id="reset">Reset</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <div class="top"><label for="squash">Squash</label><output id="squashOut" for="squash">0.75</output></div>
+        <input type="range" id="squash" min="0.4" max="1" step="0.05" value="0.75">
+        <p class="hint">Camera height. 1 looks straight down; below about 0.6 roofs get thin.</p>
+      </div>
+
+      <div class="field">
+        <div class="top"><label for="spacing">Spacing</label><output id="spacingOut" for="spacing">1 px</output></div>
+        <input type="range" id="spacing" min="0" max="3" step="0.5" value="1">
+        <p class="hint">Lift between slices. 0 with squash 1 draws the object flat.</p>
+      </div>
+
+      <label class="check" for="outline"><input type="checkbox" id="outline" checked> Outline the finished stack</label>
+
+      <div class="field">
+        <span class="label" id="paintLabel">Paint</span>
+        <div class="row" id="paints"></div>
+      </div>
+    </div>
+  </div>
+
+  <section class="sheet">
+    <h2>Slice sheet</h2>
+    <p class="hint" id="sheetHint"></p>
+    <div class="sheet-scroll">
+      <canvas id="sheet" width="360" height="43"></canvas>
+      <div class="ticks" id="ticks"></div>
+    </div>
+  </section>
+</div>
+
+<script>
+//CORE-START
+var W = 24, H = 43, COUNT = 15, VIEW = 128;
+
+function makeSheet(w, h, count) {
+  var data = new Uint8ClampedArray(w * count * h * 4);
+  function set(z, x, y, c) {
+    if (x < 0 || y < 0 || x >= w || y >= h || z < 0 || z >= count) return;
+    var i = (y * w * count + z * w + x) * 4;
+    data[i] = c[0]; data[i + 1] = c[1]; data[i + 2] = c[2]; data[i + 3] = 255;
+  }
+  function rect(z, x0, y0, x1, y1, c) {
+    for (var y = y0; y <= y1; y++) for (var x = x0; x <= x1; x++) set(z, x, y, c);
+  }
+  // rectangle with chamfered corners of size r
+  function rr(z, x0, y0, x1, y1, r, c) {
+    for (var y = y0; y <= y1; y++) for (var x = x0; x <= x1; x++) {
+      var cx = Math.min(x - x0, x1 - x), cy = Math.min(y - y0, y1 - y);
+      if (cx + cy < r) continue;
+      set(z, x, y, c);
+    }
+  }
+  return { data: data, width: w * count, height: h, set: set, rect: rect, rr: rr };
+}
+
+function buildCar(paint) {
+  var S = makeSheet(24, 43, 15), rect = S.rect, rr = S.rr;
+  function shade(f) {
+    return [Math.min(255, paint.body[0] * f), Math.min(255, paint.body[1] * f), Math.min(255, paint.body[2] * f)];
+  }
+  var TIRE = [27, 29, 34], UNDER = [44, 47, 54], GLASS = [38, 58, 78], GLASS_HI = [70, 104, 132];
+  var HEAD = [255, 233, 163], TAIL = [200, 36, 36], GRILLE = [36, 38, 44];
+  var z;
+  function wheels(z) {
+    rect(z, 1, 6, 4, 13, TIRE); rect(z, 19, 6, 22, 13, TIRE);
+    rect(z, 1, 29, 4, 36, TIRE); rect(z, 19, 29, 22, 36, TIRE);
+  }
+  for (z = 0; z <= 1; z++) { wheels(z); rr(z, 3, 3, 20, 39, 1, UNDER); }
+  var bodyShade = [0.6, 0.66, 0.78, 0.86, 0.93, 1.0];
+  for (z = 2; z <= 7; z++) {
+    if (z <= 4) wheels(z);
+    rr(z, 2, 1, 21, 41, 3, shade(bodyShade[z - 2]));
+  }
+  for (z = 4; z <= 5; z++) {
+    rect(z, 4, 40, 7, 41, HEAD); rect(z, 16, 40, 19, 41, HEAD);
+    rect(z, 4, 1, 7, 2, TAIL); rect(z, 16, 1, 19, 2, TAIL);
+  }
+  for (z = 3; z <= 4; z++) rect(z, 9, 40, 14, 41, GRILLE);
+  rect(7, 10, 1, 13, 41, paint.stripe);
+  rr(8, 4, 11, 19, 31, 2, shade(0.9));
+  var cab = [[4, 11, 19, 31], [4, 11, 19, 31], [4, 12, 19, 30], [5, 13, 18, 29]];
+  for (z = 9; z <= 12; z++) {
+    var b = cab[z - 9];
+    rr(z, b[0], b[1], b[2], b[3], 2, z >= 11 ? GLASS_HI : GLASS);
+    rr(z, b[0] + 1, b[1] + 1, b[2] - 1, b[3] - 1, 2, shade(0.7));
+    var p = shade(0.9);
+    rect(z, b[0], 20, b[0], 22, p); rect(z, b[2], 20, b[2], 22, p);
+    rect(z, b[0] + 1, b[1] + 1, b[0] + 2, b[1] + 2, p); rect(z, b[2] - 2, b[1] + 1, b[2] - 1, b[1] + 2, p);
+    rect(z, b[0] + 1, b[3] - 2, b[0] + 2, b[3] - 1, p); rect(z, b[2] - 2, b[3] - 2, b[2] - 1, b[3] - 1, p);
+  }
+  rr(13, 5, 13, 18, 29, 2, shade(1.0));
+  rect(13, 10, 13, 13, 29, paint.stripe);
+  rr(14, 6, 14, 17, 28, 2, shade(1.1));
+  rect(14, 10, 14, 13, 28, paint.stripe);
+  return S;
+}
+
+// Cyberpunk apartment block: 36 x 36 footprint, 56 slices.
+// Plinth, shop podium with awning, five-floor tower, three-floor setback tower, roof clutter.
+// The front of the building is the bottom edge of each slice.
+function buildApartment(scheme) {
+  var S = makeSheet(36, 36, 56), set = S.set, rect = S.rect;
+  var A = scheme.a, B = scheme.b;
+  var WALL = [40, 44, 60], WALL2 = [48, 42, 68], SLAB = [64, 70, 90], ROOF = [50, 54, 70];
+  var DARK = [22, 25, 36], UNLIT = [18, 22, 34], AMBER = [255, 196, 96], SHOP = [255, 220, 160];
+  var METAL = [112, 118, 132], RAIL = [92, 102, 126], PIPE = [150, 92, 60];
+  var z, x, y;
+
+  function hash(a, b, c) {
+    var n = Math.imul(a + 1, 73856093) ^ Math.imul(b + 1, 19349663) ^ Math.imul(c + 1, 83492791);
+    n = Math.imul(n ^ (n >>> 13), 1274126177);
+    return ((n ^ (n >>> 16)) >>> 0) % 100;
+  }
+  function win(floor, side, idx) {
+    var r = hash(floor, side, idx);
+    return r < 42 ? UNLIT : r < 67 ? B : r < 87 ? AMBER : A;
+  }
+  // One slice of a rectangular block: wall fill, with a 2 px edge chosen by edgeColor(side, t, len).
+  // side: 0 back, 1 right, 2 front, 3 left. t runs along that side.
+  function block(z, x0, y0, x1, y1, wall, edgeColor) {
+    for (var y = y0; y <= y1; y++) for (var x = x0; x <= x1; x++) {
+      var dx = Math.min(x - x0, x1 - x), dy = Math.min(y - y0, y1 - y);
+      if (Math.min(dx, dy) >= 2) { set(z, x, y, wall); continue; }
+      var side, t, len;
+      if (dy <= dx) { side = (y - y0 <= y1 - y) ? 0 : 2; t = x - x0; len = x1 - x0 + 1; }
+      else { side = (x - x0 <= x1 - x) ? 3 : 1; t = y - y0; len = y1 - y0 + 1; }
+      set(z, x, y, edgeColor(side, t, len) || wall);
+    }
+  }
+  function isWindow(t, len) { return t >= 3 && t <= len - 4 && (t - 3) % 4 < 2; }
+  // Each floor is 5 slices: slab, sill, then three slices of windows.
+  function tower(z0, floors, x0, y0, x1, y1, wall, seed) {
+    for (var f = 0; f < floors; f++) for (var k = 0; k < 5; k++) {
+      (function (f, k) {
+        block(z0 + f * 5 + k, x0, y0, x1, y1, wall, function (side, t, len) {
+          if (k === 0) return SLAB;
+          if (k === 1) return null;
+          return isWindow(t, len) ? win(seed + f, side, Math.floor((t - 3) / 4)) : null;
+        });
+      })(f, k);
+    }
+  }
+  function ring(z, x0, y0, x1, y1, c) {
+    for (var y = y0; y <= y1; y++) for (var x = x0; x <= x1; x++) {
+      if (x === x0 || x === x1 || y === y0 || y === y1) set(z, x, y, c);
+    }
+  }
+
+  // z0-1: pavement plinth
+  S.rr(0, 1, 1, 34, 34, 2, [30, 32, 42]);
+  S.rr(1, 1, 1, 34, 34, 2, [36, 38, 50]);
+
+  // z2-9: shop podium, lit shopfront and door on the front
+  block(2, 3, 3, 32, 32, DARK, function () { return DARK; });
+  for (z = 3; z <= 7; z++) {
+    block(z, 3, 3, 32, 32, WALL, function (side, t, len) {
+      if (side === 2) {
+        if (t >= 13 && t <= 16) return z <= 6 ? DARK : SHOP;       // door
+        return (t >= 3 && t <= len - 4) ? SHOP : null;
+      }
+      return (z >= 5 && isWindow(t, len) && hash(40, side, Math.floor(t / 4)) < 30) ? B : null;
+    });
+  }
+  block(8, 3, 3, 32, 32, WALL, function () { return SLAB; });
+  block(9, 3, 3, 32, 32, ROOF, function () { return B; });        // neon trim around the podium roof
+  rect(8, 6, 33, 29, 34, A);                                       // awning over the shopfront
+
+  // z10-34: main tower, five floors
+  tower(10, 5, 5, 5, 30, 30, WALL, 0);
+  // balconies on the front
+  for (var f = 1; f <= 4; f++) {
+    z = 10 + f * 5;
+    rect(z, 8, 31, 13, 32, SLAB); rect(z, 20, 31, 25, 32, SLAB);
+    for (x = 8; x <= 13; x++) { set(z + 1, x, 32, RAIL); set(z + 1, x + 12, 32, RAIL); }
+    set(z + 1, 8, 31, RAIL); set(z + 1, 13, 31, RAIL); set(z + 1, 20, 31, RAIL); set(z + 1, 25, 31, RAIL);
+  }
+  // vertical neon blade sign on the right face
+  rect(13, 31, 12, 32, 15, B);
+  for (z = 14; z <= 30; z++) rect(z, 31, 12, 32, 15, A);
+  rect(31, 31, 12, 32, 15, B);
+  // pipe run and air conditioners on the left face
+  for (z = 10; z <= 34; z++) rect(z, 3, 20, 4, 21, PIPE);
+  rect(17, 3, 9, 4, 12, METAL); rect(18, 3, 9, 4, 12, METAL);
+  rect(27, 3, 9, 4, 12, METAL); rect(28, 3, 9, 4, 12, METAL);
+
+  // z35-38: lower roof terrace around the setback
+  rect(35, 5, 5, 30, 30, ROOF);
+  ring(35, 5, 5, 30, 30, SLAB);
+  ring(36, 5, 5, 30, 30, SLAB);
+  for (z = 36; z <= 38; z++) rect(z, 26, 8, 29, 11, METAL);       // air handler
+  rect(38, 27, 9, 28, 10, DARK);
+  for (z = 36; z <= 37; z++) rect(z, 26, 16, 28, 25, [70, 235, 130]); // hydroponics bed
+  rect(36, 8, 6, 21, 7, [40, 70, 140]);                             // solar panels
+
+  // z35-49: setback tower, three floors
+  tower(35, 3, 5, 9, 24, 30, WALL2, 9);
+
+  // z50-55: top roof
+  rect(50, 5, 9, 24, 30, ROOF);
+  ring(50, 5, 9, 24, 30, B);
+  ring(51, 5, 9, 24, 30, SLAB);
+  // water tank
+  set(51, 9, 13, DARK); set(51, 14, 13, DARK); set(51, 9, 18, DARK); set(51, 14, 18, DARK);
+  for (z = 52; z <= 55; z++) for (y = 11; y <= 20; y++) for (x = 7; x <= 16; x++) {
+    var ddx = x - 11.5, ddy = y - 15.5;
+    if (ddx * ddx + ddy * ddy <= 17) set(z, x, y, z === 55 ? [178, 118, 86] : [140, 88, 62]);
+  }
+  // billboard facing the street
+  rect(51, 9, 26, 9, 27, METAL); rect(51, 20, 26, 20, 27, METAL);
+  for (z = 52; z <= 55; z++) for (x = 8; x <= 21; x++) {
+    var c = (z >= 53 && z <= 54 && x >= 10 && x <= 19 && (x + z) % 3 === 0) ? B : A;
+    set(z, x, 26, c); set(z, x, 27, c);
+  }
+  // antenna with a warning light
+  for (z = 51; z <= 54; z++) rect(z, 19, 13, 20, 14, METAL);
+  rect(55, 19, 13, 20, 14, [255, 48, 48]);
+  return S;
+}
+
+// Draws one slice into buf (VIEW x VIEW RGBA) with nearest neighbor sampling.
+// transform = translate(pos) * translate(0, -lift) * scale(1, squash) * rotate(turn)
+function drawSlice(buf, sheet, z, px, py, turn, squash, lift, flat) {
+  var cos = Math.cos(turn), sin = Math.sin(turn);
+  var hw = Math.floor(W / 2), hh = Math.floor(H / 2);
+  var R = Math.ceil(Math.sqrt(W * W + H * H) / 2) + 1;
+  var cy = py - lift;
+  var y0 = Math.max(0, Math.floor(cy - R * squash)), y1 = Math.min(VIEW - 1, Math.ceil(cy + R * squash));
+  var x0 = Math.max(0, px - R), x1 = Math.min(VIEW - 1, px + R);
+  for (var y = y0; y <= y1; y++) {
+    var ey = (y + 0.5 - cy) / squash;
+    for (var x = x0; x <= x1; x++) {
+      var ex = x + 0.5 - px;
+      var sx = Math.floor(ex * cos + ey * sin + hw);
+      var sy = Math.floor(-ex * sin + ey * cos + hh);
+      if (sx < 0 || sy < 0 || sx >= W || sy >= H) continue;
+      var si = (sy * sheet.width + z * W + sx) * 4;
+      if (sheet.data[si + 3] === 0) continue;
+      var di = (y * VIEW + x) * 4;
+      if (flat) {
+        if (buf[di + 3] === 0) { buf[di] = flat[0]; buf[di + 1] = flat[1]; buf[di + 2] = flat[2]; buf[di + 3] = flat[3]; }
+      } else {
+        buf[di] = sheet.data[si]; buf[di + 1] = sheet.data[si + 1]; buf[di + 2] = sheet.data[si + 2]; buf[di + 3] = 255;
+      }
+    }
+  }
+}
+
+function drawStack(buf, sheet, px, py, turn, squash, spacing) {
+  for (var z = 0; z < COUNT; z++) {
+    drawSlice(buf, sheet, z, px, py, turn, squash, Math.round(z * spacing), null);
+  }
+}
+
+function bounds(buf) {
+  var minX = VIEW, minY = VIEW, maxX = -1, maxY = -1;
+  for (var y = 0; y < VIEW; y++) for (var x = 0; x < VIEW; x++) {
+    if (buf[(y * VIEW + x) * 4 + 3] === 255) {
+      if (x < minX) minX = x; if (x > maxX) maxX = x;
+      if (y < minY) minY = y; if (y > maxY) maxY = y;
+    }
+  }
+  return maxX < 0 ? { w: 0, h: 0 } : { w: maxX - minX + 1, h: maxY - minY + 1 };
+}
+
+function outlineStack(buf, c) {
+  var mark = [];
+  for (var y = 0; y < VIEW; y++) for (var x = 0; x < VIEW; x++) {
+    var i = (y * VIEW + x) * 4;
+    if (buf[i + 3] === 255) continue;
+    if ((x > 0 && buf[i - 4 + 3] === 255) || (x < VIEW - 1 && buf[i + 4 + 3] === 255) ||
+        (y > 0 && buf[i - VIEW * 4 + 3] === 255) || (y < VIEW - 1 && buf[i + VIEW * 4 + 3] === 255)) mark.push(i);
+  }
+  for (var k = 0; k < mark.length; k++) {
+    var j = mark[k];
+    buf[j] = c[0]; buf[j + 1] = c[1]; buf[j + 2] = c[2]; buf[j + 3] = 254;
+  }
+}
+//CORE-END
+
+var OBJECTS = [
+  {
+    id: "apartment", name: "Apartment", w: 36, h: 36, count: 56, view: 160, pos: [80, 136],
+    maxSpacing: 2, shadowSlice: 0, sheetScale: 2, build: buildApartment, paintLabel: "Neon",
+    note: "The front of the building is the bottom edge of each slice.",
+    paints: [
+      { name: "Magenta and cyan", a: [255, 58, 160], b: [70, 236, 250] },
+      { name: "Amber and teal", a: [255, 170, 40], b: [40, 220, 190] },
+      { name: "Acid and violet", a: [190, 255, 60], b: [170, 110, 255] }
+    ]
+  },
+  {
+    id: "car", name: "Car", w: 24, h: 43, count: 15, view: 128, pos: [64, 76],
+    maxSpacing: 3, shadowSlice: 2, sheetScale: 3, build: buildCar, paintLabel: "Paint",
+    note: "The car faces down in the sheet.",
+    paints: [
+      { name: "Signal red", body: [214, 58, 47], stripe: [244, 240, 228] },
+      { name: "Cab yellow", body: [238, 184, 40], stripe: [40, 42, 48] },
+      { name: "Harbor blue", body: [44, 110, 190], stripe: [244, 240, 228] },
+      { name: "Chalk white", body: [226, 226, 216], stripe: [214, 58, 47] }
+    ]
+  }
+];
+
+var state = { obj: 0, turn: 0, squash: 0.75, spacing: 1, outline: true, spin: true, paint: 0 };
+var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+if (reduceMotion) { state.spin = false; state.turn = 35; }
+
+var $ = function (id) { return document.getElementById(id); };
+var view = $("view"), vctx = view.getContext("2d");
+var sheetCanvas = $("sheet"), sctx = sheetCanvas.getContext("2d");
+var frame = null, sheet = null, obj = null;
+
+function paintSheet() {
+  sheet = obj.build(obj.paints[state.paint]);
+  var img = sctx.createImageData(sheet.width, sheet.height);
+  img.data.set(sheet.data);
+  sctx.putImageData(img, 0, 0);
+}
+
+function swatchBackground(p) {
+  if (p.body) return "rgb(" + p.body.join(",") + ")";
+  return "linear-gradient(135deg, rgb(" + p.a.join(",") + ") 50%, rgb(" + p.b.join(",") + ") 50%)";
+}
+
+function buildSwatches() {
+  var box = $("paints");
+  box.textContent = "";
+  $("paintLabel").textContent = obj.paintLabel;
+  obj.paints.forEach(function (p, i) {
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "swatch";
+    b.id = "paint-" + i;
+    b.title = p.name;
+    b.setAttribute("aria-label", p.name);
+    b.setAttribute("aria-pressed", i === state.paint ? "true" : "false");
+    b.style.background = swatchBackground(p);
+    b.addEventListener("click", function () {
+      state.paint = i;
+      Array.prototype.forEach.call(box.children, function (s, k) {
+        s.setAttribute("aria-pressed", k === i ? "true" : "false");
+      });
+      paintSheet();
+      render();
+    });
+    box.appendChild(b);
+  });
+}
+
+function setObject(i) {
+  state.obj = i;
+  state.paint = 0;
+  obj = OBJECTS[i];
+  W = obj.w; H = obj.h; COUNT = obj.count; VIEW = obj.view;
+  view.width = VIEW; view.height = VIEW;
+  frame = vctx.createImageData(VIEW, VIEW);
+  var sp = $("spacing");
+  sp.max = obj.maxSpacing;
+  if (state.spacing > obj.maxSpacing) { state.spacing = obj.maxSpacing; }
+  sp.value = state.spacing;
+  var cell = obj.w * obj.sheetScale;
+  sheetCanvas.width = obj.w * obj.count; sheetCanvas.height = obj.h;
+  sheetCanvas.style.width = (cell * obj.count) + "px";
+  sheetCanvas.style.height = (obj.h * obj.sheetScale) + "px";
+  var ticks = $("ticks");
+  ticks.textContent = "";
+  ticks.style.width = (cell * obj.count) + "px";
+  ticks.style.gridTemplateColumns = "repeat(" + obj.count + ", " + cell + "px)";
+  for (var t = 0; t < obj.count; t++) {
+    var d = document.createElement("div");
+    d.textContent = t;
+    ticks.appendChild(d);
+  }
+  $("sheetHint").textContent = obj.count + " slices of " + obj.w + " x " + obj.h +
+    " px in one row, ground slice on the left, top slice on the right. " + obj.note + " Placeholder art, drawn in code.";
+  Array.prototype.forEach.call($("objects").children, function (b, k) {
+    b.setAttribute("aria-pressed", k === i ? "true" : "false");
+  });
+  buildSwatches();
+  paintSheet();
+  render();
+}
+
+function render() {
+  var buf = frame.data;
+  buf.fill(0);
+  var turn = state.turn * Math.PI / 180;
+  drawStack(buf, sheet, obj.pos[0], obj.pos[1], turn, state.squash, state.spacing);
+  var b = bounds(buf);
+  if (state.outline) outlineStack(buf, [16, 18, 24]);
+  // ground shadow: the footprint, offset, only where nothing else was drawn
+  drawSlice(buf, sheet, obj.shadowSlice, obj.pos[0] + 3, obj.pos[1] + 3, turn, state.squash, 0, [0, 0, 0, 70]);
+  vctx.putImageData(frame, 0, 0);
+  $("readout").textContent = "covers " + b.w + " x " + b.h + " px";
+  $("turn").value = Math.round(state.turn) % 360;
+  $("turnOut").textContent = (Math.round(state.turn) % 360) + "°";
+  $("squashOut").textContent = state.squash.toFixed(2);
+  $("spacingOut").textContent = state.spacing + " px";
+}
+
+var last = 0;
+function tick(t) {
+  if (state.spin) {
+    var dt = last ? Math.min(0.1, (t - last) / 1000) : 0;
+    state.turn = (state.turn + 30 * dt) % 360;
+    render();
+    last = t;
+    requestAnimationFrame(tick);
+  } else {
+    last = 0;
+  }
+}
+function setSpin(on) {
+  var was = state.spin;
+  state.spin = on;
+  $("spin").setAttribute("aria-pressed", on ? "true" : "false");
+  if (on && !was) requestAnimationFrame(tick);
+}
+
+$("turn").addEventListener("input", function (e) { setSpin(false); state.turn = +e.target.value; render(); });
+$("squash").addEventListener("input", function (e) { state.squash = +e.target.value; render(); });
+$("spacing").addEventListener("input", function (e) { state.spacing = +e.target.value; render(); });
+$("outline").addEventListener("change", function (e) { state.outline = e.target.checked; render(); });
+$("spin").addEventListener("click", function () { setSpin(!state.spin); });
+$("reset").addEventListener("click", function () {
+  setSpin(false);
+  state.turn = 0; state.squash = 0.75; state.spacing = 1; state.outline = true;
+  $("squash").value = 0.75; $("spacing").value = 1; $("outline").checked = true;
+  render();
+});
+
+var stage = $("stage"), dragging = false, lastX = 0;
+stage.addEventListener("pointerdown", function (e) {
+  dragging = true; lastX = e.clientX; setSpin(false);
+  try { stage.setPointerCapture(e.pointerId); } catch (err) {}
+});
+stage.addEventListener("pointermove", function (e) {
+  if (!dragging) return;
+  state.turn = ((state.turn + (e.clientX - lastX) * 0.8) % 360 + 360) % 360;
+  lastX = e.clientX;
+  render();
+});
+function endDrag() { dragging = false; }
+stage.addEventListener("pointerup", endDrag);
+stage.addEventListener("pointercancel", endDrag);
+stage.addEventListener("keydown", function (e) {
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  e.preventDefault();
+  setSpin(false);
+  state.turn = ((state.turn + (e.key === "ArrowRight" ? 5 : -5)) % 360 + 360) % 360;
+  render();
+});
+
+OBJECTS.forEach(function (o, i) {
+  var b = document.createElement("button");
+  b.type = "button";
+  b.id = "object-" + o.id;
+  b.textContent = o.name;
+  b.addEventListener("click", function () { setObject(i); });
+  $("objects").appendChild(b);
+});
+
+$("spin").setAttribute("aria-pressed", state.spin ? "true" : "false");
+setObject(0);
+if (state.spin) requestAnimationFrame(tick);
+</script>
+</body>
+</html>
