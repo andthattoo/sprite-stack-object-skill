@@ -15,8 +15,8 @@
   --muted: #5a6660;
   --line: #c9cfc6;
   --accent: #1c6f8c;
-  --ground: #b4bcb1;
-  --ground-line: #a4ada1;
+  --ground: #1a1f27;
+  --ground-line: #232a34;
   --font-display: "Silkscreen", "Courier New", monospace;
   --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
@@ -30,8 +30,8 @@
     --muted: #93a09a;
     --line: #323c41;
     --accent: #62bcd9;
-    --ground: #2b3438;
-    --ground-line: #343f44;
+    --ground: #151a21;
+    --ground-line: #1e252e;
   }
 }
 :root[data-theme="dark"] {
@@ -42,8 +42,8 @@
   --muted: #93a09a;
   --line: #323c41;
   --accent: #62bcd9;
-  --ground: #2b3438;
-  --ground-line: #343f44;
+  --ground: #151a21;
+  --ground-line: #1e252e;
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; }
@@ -199,7 +199,7 @@ h2 { font-size: 15px; font-weight: 600; margin: 0; }
 <div class="wrap">
   <header>
     <h1>Sprite Stack Viewer</h1>
-    <p id="intro">Flat slices, each drawn 1 px above the last and turned by the same angle. Drag the stage to turn it.</p>
+    <p id="intro">Flat slices, each drawn 1 px above the last and turned by the same angle, then lit in one pass. Drag the stage to turn it.</p>
   </header>
 
   <div class="bench">
@@ -238,6 +238,13 @@ h2 { font-size: 15px; font-weight: 600; margin: 0; }
       <label class="check" for="outline"><input type="checkbox" id="outline" checked> Outline the finished stack</label>
 
       <div class="field">
+        <label class="check" for="light"><input type="checkbox" id="light" checked> Lighting and glow</label>
+        <div class="top"><label for="lightDir">Light from</label><output id="lightOut" for="lightDir">315°</output></div>
+        <input type="range" id="lightDir" min="0" max="359" step="5" value="315">
+        <p class="hint">0° lights from the top of the screen, 90° from the right. Lamps and engines glow on their own.</p>
+      </div>
+
+      <div class="field">
         <span class="label" id="paintLabel">Paint</span>
         <div class="row" id="paints"></div>
       </div>
@@ -257,6 +264,7 @@ h2 { font-size: 15px; font-weight: 600; margin: 0; }
 <script>
 //CORE-START
 var W = 24, H = 43, COUNT = 15, VIEW = 128;
+var HEIGHT = null;   // optional per-pixel height buffer (slice index + 1), filled by drawSlice for lightStack
 
 function makeSheet(w, h, count) {
   var data = new Uint8ClampedArray(w * count * h * 4);
@@ -318,6 +326,7 @@ function buildCar(paint) {
   rect(13, 10, 13, 13, 29, paint.stripe);
   rr(14, 6, 14, 17, 28, 2, shade(1.1));
   rect(14, 10, 14, 13, 28, paint.stripe);
+  S.emissive = [HEAD, TAIL];
   return S;
 }
 
@@ -440,7 +449,565 @@ function buildApartment(scheme) {
   // antenna with a warning light
   for (z = 51; z <= 54; z++) rect(z, 19, 13, 20, 14, METAL);
   rect(55, 19, 13, 20, 14, [255, 48, 48]);
+  S.emissive = [A, B, AMBER, SHOP, [255, 48, 48]];
   return S;
+}
+
+// Breakwater heavy freighter: 208 x 304 slices, 48 of them. Drawn from the Breakwater concept sheet.
+// The bow is the bottom edge of each slice (+y). s is the distance from the bow in px. Port is +x.
+// Height bands:
+//   z0-3    belly, inset
+//   z4-9    dark lower hull, chamfered out to full beam
+//   z10-21  band colour along the sides (stops lower, at z18, on the forward half); bow cargo door z5-25
+//   z4-28   twin engines at the stern quarters, nozzles aft
+//   z20-31  faceted housings over the engine fronts
+//   z22-33  plated upper hull, sloped shoulders; the deck drops toward the bow
+//   z34-37  raised cargo spine with six hatch covers, lifting lugs z38
+//   z30-41  bridge cupola on the foredeck with lit windows, railings z+1..+4 around it
+//   z38-46  fore and aft turrets on the spine
+//   z30-47  antenna masts beside the bridge
+function buildBreakwater(scheme) {
+  var SW = 208, SH = 304, N = 48, CX = 103.5, BOW = 300;
+  var S = makeSheet(SW, SH, N), set = S.set;
+  var HULLC = scheme.b, BAND = scheme.a, LIGHT = scheme.glow;
+  function mul(c, f) { return [Math.min(255, c[0] * f), Math.min(255, c[1] * f), Math.min(255, c[2] * f)]; }
+  function mix(c, d, t) { return [c[0] + (d[0] - c[0]) * t, c[1] + (d[1] - c[1]) * t, c[2] + (d[2] - c[2]) * t]; }
+  function hash(a, b, c) {
+    var n = Math.imul(a + 1, 73856093) ^ Math.imul(b + 1, 19349663) ^ Math.imul(c + 1, 83492791);
+    n = Math.imul(n ^ (n >>> 13), 1274126177);
+    return ((n ^ (n >>> 16)) >>> 0) % 100;
+  }
+  var BELLY = [52, 54, 60], GREY = [78, 80, 88], ENG = [88, 90, 98], ENG_D = [52, 54, 62], ENG_L = [118, 120, 130];
+  var DARK = [24, 26, 32], BORE = [14, 14, 18], STEEL = [132, 136, 146], METAL = [94, 98, 108], RUST = [128, 88, 62];
+  var GLASS = [24, 30, 40], RED = [255, 52, 60], GREEN = [60, 255, 130], LAMP = [255, 250, 232];
+  var DOOR = mix(HULLC, [150, 150, 152], 0.3), SEAM = mul(HULLC, 0.72);
+  var z, k, x, y;
+
+  function fn(v) { return typeof v === "function" ? v : function () { return v; }; }
+  // Fill every pixel where inside(x, y) holds. Pixels within 2 px of the outside take edge(x, y), the rest fill(x, y).
+  function part(z, x0, y0, x1, y1, inside, fill, edge) {
+    fill = fn(fill); edge = fn(edge);
+    x0 = Math.max(0, Math.floor(x0)); y0 = Math.max(0, Math.floor(y0)); x1 = Math.min(SW - 1, Math.ceil(x1)); y1 = Math.min(SH - 1, Math.ceil(y1));
+    var w = x1 - x0 + 5, h = y1 - y0 + 5, m = new Uint8Array(w * h), x, y, i;
+    for (y = y0; y <= y1; y++) for (x = x0; x <= x1; x++) if (inside(x, y)) m[(y - y0 + 2) * w + (x - x0 + 2)] = 1;
+    for (y = y0; y <= y1; y++) for (x = x0; x <= x1; x++) {
+      i = (y - y0 + 2) * w + (x - x0 + 2);
+      if (!m[i]) continue;
+      var e = !(m[i - 1] && m[i + 1] && m[i - w] && m[i + w] && m[i - 2] && m[i + 2] && m[i - 2 * w] && m[i + 2 * w] &&
+                m[i - w - 1] && m[i - w + 1] && m[i + w - 1] && m[i + w + 1]);
+      set(z, x, y, (e && edge(x, y)) || fill(x, y));
+    }
+  }
+  function rectM(z, x0, y0, x1, y1, c) { S.rect(z, x0, y0, x1, y1, c); S.rect(z, SW - 1 - x1, y0, SW - 1 - x0, y1, c); }
+  function disk(z, cx, cy, r, fill, edge) {
+    part(z, cx - r, cy - r, cx + r, cy + r, function (x, y) { var dx = x - cx, dy = y - cy; return dx * dx + dy * dy <= r * r; }, fill, edge);
+  }
+  function oct(z, cx, cy, r, fill, edge) {
+    part(z, cx - r, cy - r, cx + r, cy + r, function (x, y) {
+      var dx = Math.abs(x - cx), dy = Math.abs(y - cy); return dx <= r && dy <= r && dx + dy <= r * 1.45;
+    }, fill, edge);
+  }
+
+  // planform: blunt bow widening to full beam, a long parallel body, a waist between the engines, a short tail
+  function hullHW(s) {
+    if (s < 0 || s > 280) return -1;
+    var w = s <= 58 ? 24 + s * (14 / 58) : s <= 205 ? 38 : s <= 235 ? 38 - (s - 205) * (16 / 30) : 22 - (s - 235) * (7 / 45);
+    if (s < 4) w -= (4 - s) * 1.5;
+    return w;
+  }
+  function zTop(s) { return s < 70 ? 24 + s * 0.13 : s > 240 ? 33 - (s - 240) * 0.2 : 33; }     // deck height along the length
+  function inset(z) { return z < 4 ? 10 - z * 1.5 : z < 10 ? Math.max(0, 4 - (z - 4) * 0.8) : z < 22 ? 0 : (z - 22) * 0.9; }
+  function plateFrom(s) { return s < 130 ? 18 : 22; }                                            // where the band colour stops
+
+  // plated top surfaces: seams every 34 px along the length and two seams each side, slight tone per plate, rust specks
+  function plate(x, y) {
+    var s = BOW - y, ax = Math.abs(x - CX);
+    if (s % 34 < 2 || (ax >= 12 && ax < 14) || (ax >= 27 && ax < 29)) return mul(HULLC, 0.8);
+    if (hash(x >> 1, y >> 1, 11) < 2) return mix(HULLC, RUST, 0.4);
+    var h = hash(Math.floor(s / 34), ax < 12 ? 0 : ax < 27 ? 1 : 2, x < CX ? 0 : 1);
+    return mul(HULLC, 0.95 + (h % 10) * 0.011);
+  }
+  function topColor(z) {
+    return function (x, y) {
+      if (z < 4) return BELLY;
+      if (z < 10) return GREY;
+      return z < plateFrom(BOW - y) ? BAND : plate(x, y);
+    };
+  }
+  function sideColor(z) {
+    return function (x, y) {
+      var s = BOW - y, ax = Math.abs(x - CX);
+      if (s <= 3 && ax <= 21 && z >= 5 && z <= 25) {                       // bow cargo door
+        if (z <= 6 && ax >= 14 && ax <= 17) return LIGHT;
+        if (z === 5 || z === 25 || ax >= 20 || (z === 15 && ax <= 21)) return SEAM;
+        return mul(DOOR, 0.86 + 0.008 * (z - 5));
+      }
+      if (z < 4) return mul(BELLY, 0.8);
+      if (z < 10) return (s % 30 < 2) ? mul(GREY, 0.72) : mul(GREY, 0.78 + 0.03 * (z - 4));
+      if (z < plateFrom(s)) {
+        if (s >= 112 && s <= 121 && z >= 11 && z <= 17) return (z === 11 || z === 17 || s === 112 || s === 121) ? mul(BAND, 0.62) : mul(BAND, 1.18);   // side hatch
+        if (s >= 176 && s <= 183 && z >= 11 && z <= 16) return (z === 11 || z === 16 || s === 176 || s === 183) ? mul(BAND, 0.62) : mul(BAND, 1.18);
+        if (z === 13 && s >= 150 && s <= 151) return LIGHT;
+        if (s % 26 < 2) return mul(BAND, 0.72);
+        return mul(BAND, 0.84 + 0.022 * (z - 10));
+      }
+      if (z === plateFrom(s)) return SEAM;                                 // trim line above the band
+      if (s % 34 < 2) return SEAM;
+      if (z >= 26 && z <= 28 && ((s >= 90 && s <= 97) || (s >= 158 && s <= 165))) return mul(HULLC, 0.66);   // access panels
+      if (hash(s >> 1, z, 3) < 3) return mix(HULLC, RUST, 0.45);
+      return mul(HULLC, 0.76 + 0.014 * (z - 18));
+    };
+  }
+
+  // z4-28: engines, drawn first so the hull tail and the housings cover their inner sides
+  for (z = 4; z <= 28; z++) {
+    (function (z) {
+      var dz = z - 16, lit = 0.62 + 0.03 * (z - 4);
+      part(z, 60, 2, 147, 70, function (x, y) {
+        var s = BOW - y, d = Math.abs(Math.abs(x - CX) - 26);
+        if (s < 236 || s > 296) return false;
+        var r = s > 282 ? 9 : 12;
+        return Math.abs(dz) <= r && d <= Math.sqrt(r * r - dz * dz);
+      }, function (x, y) {
+        var s = BOW - y;
+        if (s > 282) return mul(ENG_D, 0.8 + 0.03 * (z - 7));
+        return ((s - 236) % 15 < 2) ? ENG_D : mul(ENG, lit + 0.1);
+      }, function (x, y) {
+        var s = BOW - y, d = Math.abs(Math.abs(x - CX) - 26);
+        if (s >= 294) return (d <= 6 && Math.abs(dz) <= 6) ? BORE : ENG_L;  // nozzle mouth and rim
+        if (s > 282) return (s <= 284) ? ENG_L : mul(ENG_D, 0.7 + 0.035 * (z - 7));
+        if ((s - 236) % 15 < 2) return ENG_D;
+        return mul(ENG, lit);
+      });
+    })(z);
+  }
+  // z20-31: housings over the engine fronts, with a recessed slot on top
+  for (z = 20; z <= 31; z++) {
+    (function (z) {
+      var t = z - 20;
+      part(z, 60, 40, 147, 110, function (x, y) {
+        var s = BOW - y, ax = Math.abs(x - CX);
+        return ax >= 14 && ax <= 38 - Math.max(0, z - 26) * 1.3 && s >= 196 + t * 1.6 && s <= 254 - t * 0.9;
+      }, function (x, y) {
+        var s = BOW - y, ax = Math.abs(x - CX);
+        if (z >= 30 && ax >= 22 && ax <= 29 && s >= 218 && s <= 238) return DARK;
+        return plate(x, y);
+      }, function (x, y) {
+        return ((BOW - y) % 34 < 2) ? SEAM : mul(HULLC, 0.74 + 0.016 * t);
+      });
+    })(z);
+  }
+
+  // z0-33: hull body
+  for (z = 0; z <= 33; z++) {
+    (function (z) {
+      var ins = inset(z);
+      part(z, 60, 2, 147, 302, function (x, y) {
+        var s = BOW - y;
+        if (z < 4 && (s < 10 || s > 270)) return false;
+        if (z > zTop(s)) return false;
+        return Math.abs(x - CX) <= hullHW(s) - ins;
+      }, topColor(z), sideColor(z));
+    })(z);
+  }
+  // navigation lights on the shoulders, stern light on the tail
+  for (z = 22; z <= 23; z++) { S.rect(z, 66, 158, 67, 161, GREEN); S.rect(z, 140, 158, 141, 161, RED); }
+  for (z = 24; z <= 25; z++) S.rect(z, 102, 20, 105, 21, LAMP);
+
+  // z34-37: cargo spine with hatch covers
+  for (z = 34; z <= 37; z++) {
+    (function (z) {
+      var t = z - 34;
+      part(z, 70, 60, 137, 245, function (x, y) {
+        var s = BOW - y;
+        return s >= 62 + t && s <= 232 - t && Math.abs(x - CX) <= 24 - t;
+      }, function (x, y) {
+        var s = BOW - y, q = (s - 62) % 34, ax = Math.abs(x - CX);
+        if (q < 2 || (ax < 1)) return mul(HULLC, 0.78);
+        if (hash(x >> 1, y >> 1, 23) < 2) return mix(HULLC, RUST, 0.4);
+        return mul(HULLC, 0.99 + (hash(Math.floor((s - 62) / 34), x < CX ? 0 : 1, 5) % 10) * 0.009);
+      }, function (x, y) {
+        return ((BOW - y - 62) % 34 < 2) ? SEAM : mul(HULLC, 0.8 + 0.05 * t);
+      });
+    })(z);
+  }
+  for (k = 0; k < 5; k++) { y = BOW - (62 + k * 34 + 10); rectM(38, 84, y - 2, 86, y, METAL); rectM(38, 84, y - 20, 86, y - 18, METAL); }   // lifting lugs
+
+  // z30-41: bridge cupola on the foredeck
+  var BY = BOW - 40;
+  for (z = 30; z <= 35; z++) oct(z, CX, BY, 10, plate, mul(HULLC, 0.74 + 0.03 * (z - 30)));
+  for (z = 36; z <= 38; z++) {
+    oct(z, CX, BY, 10, GLASS, function (x, y) {
+      var a = Math.floor((Math.atan2(y - BY, x - CX) + Math.PI) / (Math.PI / 12));
+      if (a % 3 === 0) return mul(HULLC, 0.8);                             // window posts
+      return hash(a, 2, 9) < 62 ? LIGHT : GLASS;
+    });
+  }
+  oct(39, CX, BY, 10.6, mul(HULLC, 1.02), mul(HULLC, 0.9));
+  oct(40, CX, BY, 8, mul(HULLC, 1.06), mul(HULLC, 0.96));
+  oct(41, CX, BY, 4, METAL, STEEL);
+
+  // railings around the foredeck: posts every 8 px, a top rail four slices above the deck
+  for (y = BOW - 62; y <= BOW - 24; y++) {
+    var s = BOW - y, zd = Math.floor(zTop(s));
+    for (k = 1; k <= 4; k++) if (k === 4 || s % 8 < 2) rectM(zd + k, 80, y, 81, y, METAL);
+  }
+  for (x = 80; x <= 127; x++) {
+    var zb = Math.floor(zTop(24));
+    for (k = 1; k <= 4; k++) if (k === 4 || x % 8 < 2) S.rect(zb + k, x, BOW - 25, x, BOW - 24, METAL);
+  }
+
+  // z38-46: turrets on the spine, barrels toward the bow
+  function turret(s0) {
+    var ty = BOW - s0, z;
+    for (z = 38; z <= 39; z++) disk(z, CX, ty, 8.2, ENG_D, DARK);
+    for (z = 42; z <= 44; z++) { S.rect(z, 102, ty + 5, 105, ty + 22, z === 44 ? ENG : ENG_D); S.rect(z, 102, ty + 20, 105, ty + 22, STEEL); }
+    for (z = 40; z <= 46; z++) {
+      (function (z) {
+        var g = z === 46 ? 1 : 0;
+        part(z, CX - 8, ty - 9, CX + 8, ty + 9, function (x, y) {
+          var dx = Math.abs(x - CX), dy = Math.abs(y - ty); return dx <= 6 - g && dy <= 7 - g && dx + dy <= 10.5 - g;
+        }, z >= 45 ? ENG_L : ENG, mul(ENG, 0.66 + 0.06 * (z - 40)));
+      })(z);
+    }
+    S.rect(46, 99, ty - 4, 100, ty - 3, GLASS);                            // sight
+  }
+  turret(74); turret(190);
+
+  // antenna masts beside the bridge
+  for (z = 30; z <= 45; z++) { S.rect(z, 96, BOW - 55, 97, BOW - 54, STEEL); if (z <= 42) S.rect(z, 110, BOW - 55, 111, BOW - 54, STEEL); }
+  for (z = 46; z <= 47; z++) S.rect(z, 96, BOW - 55, 97, BOW - 54, RED);
+
+  S.emissive = [LIGHT, RED, GREEN, LAMP];
+  return S;
+}
+
+// Gunship: 104 x 152 footprint, 48 slices. An original medium multi-crew ship in a dark hard-surface sci-fi style.
+// The nose is the bottom edge of each slice (+y). The ship's port side is +x.
+// Height bands:
+//   z0-5    landing gear pads and struts, ventral turret
+//   z6-9    keel with VTOL nozzles, chin guns
+//   z8-11   under-wing missiles
+//   z10-19  main hull (rear cargo ramp, side doors, portholes, radome nose), wingtip thruster pods
+//   z12-17  wings with flaps, livery bands and thruster quads; wing cannons z13-16
+//   z8-27   twin engine nacelles beside the rear hull
+//   z20-23  upper deck with radiators, markings and a livery band
+//   z20-27  canopy ahead of the deck, glass with frame struts
+//   z24-27  dorsal spine, docking collar, whip antennas with beacons
+//   z28-35  manned dorsal turret with twin barrels
+//   z28-47  canted tail fins on the nacelles; sensor mast with dish and strobe z28-44
+function buildGunship(scheme) {
+  var SW = 104, SH = 152, N = 48, CX = 51.5;
+  var S = makeSheet(SW, SH, N), set = S.set;
+  var HULL = scheme.b, ACC = scheme.a, GLOW = scheme.glow;
+  function mul(c, f) { return [Math.min(255, c[0] * f), Math.min(255, c[1] * f), Math.min(255, c[2] * f)]; }
+  function mix(c, d, t) { return [c[0] + (d[0] - c[0]) * t, c[1] + (d[1] - c[1]) * t, c[2] + (d[2] - c[2]) * t]; }
+  var DARK = [18, 21, 30], KEEL = [28, 32, 44], METAL = [62, 70, 90], STEEL = [112, 124, 148];
+  var GLASS = [14, 30, 56], GLASS_HI = [44, 96, 140], HAZ = [204, 160, 40], BLACK = [12, 14, 20];
+  var WHITE = [176, 186, 204], RED = [255, 52, 60], GREEN = [60, 255, 130], PORT = [140, 232, 255];
+  var LAMP = [255, 248, 228], SEEK = [150, 36, 44];
+  var RAD_A = [30, 34, 46], RAD_B = [74, 84, 108];
+  var GLOW_HI = mix(GLOW, [255, 255, 255], 0.6);
+  var z, k;
+
+  function fn(v) { return typeof v === "function" ? v : function () { return v; }; }
+  // Fill every pixel where inside(x, y) holds. Pixels within 2 px of the outside take edge(x, y), the rest fill(x, y).
+  function part(z, x0, y0, x1, y1, inside, fill, edge) {
+    fill = fn(fill); edge = fn(edge);
+    for (var y = y0; y <= y1; y++) for (var x = x0; x <= x1; x++) {
+      if (!inside(x, y)) continue;
+      var e = !inside(x - 1, y) || !inside(x + 1, y) || !inside(x, y - 1) || !inside(x, y + 1) ||
+              !inside(x - 2, y) || !inside(x + 2, y) || !inside(x, y - 2) || !inside(x, y + 2) ||
+              !inside(x - 1, y - 1) || !inside(x + 1, y - 1) || !inside(x - 1, y + 1) || !inside(x + 1, y + 1);
+      set(z, x, y, (e && edge(x, y)) || fill(x, y));
+    }
+  }
+  function all(z, inside, fill, edge) { part(z, 0, 0, SW - 1, SH - 1, inside, fill, edge); }
+  // rectangle on the starboard side (low x) and its mirror on the port side
+  function rectM(z, x0, y0, x1, y1, c) { S.rect(z, x0, y0, x1, y1, c); S.rect(z, SW - 1 - x1, y0, SW - 1 - x0, y1, c); }
+  function disk(z, cx, cy, r, fill, edge) {
+    part(z, Math.floor(cx - r), Math.floor(cy - r), Math.ceil(cx + r), Math.ceil(cy + r), function (x, y) {
+      var dx = x - cx, dy = y - cy; return dx * dx + dy * dy <= r * r;
+    }, fill, edge);
+  }
+
+  // fuselage half width along the length: ramp, cargo body, shoulders, cockpit section, chisel nose
+  function hullHW(y) {
+    if (y < 8 || y > 147) return -1;
+    if (y < 16) return 14 + (y - 8) * 0.5;
+    if (y <= 80) return 18;
+    if (y <= 104) return 18 - (y - 80) * 0.25;
+    if (y <= 128) return 12 - (y - 104) * 0.125;
+    return 9 - (y - 128) * 0.33;
+  }
+  function hull(inset, ya, yb) {
+    return function (x, y) { return y >= ya && y <= yb && Math.abs(x - CX) <= hullHW(y) - inset; };
+  }
+  function wingAt(thin) {
+    return function (x, y) {
+      var ax = Math.abs(x - CX), u = ax - 18;
+      return ax >= 16 && ax <= (thin ? 36 : 45) && y <= 92 - u * 1.4 && y >= 44 - u * 0.5;
+    };
+  }
+  function nacHW(z) { var zc = z - 17.5; return Math.max(3, Math.round(Math.sqrt(Math.max(0, 100 - zc * zc)) * 0.85)); }
+  function nacelle(hw) {
+    return function (x, y) {
+      var d = Math.abs(Math.abs(x - CX) - 26);
+      if (y < 2 || y > 51) return false;
+      return d <= ((y <= 5 || y >= 49) ? hw - 2.5 : hw - 0.5);
+    };
+  }
+  var PODW = [1, 2, 3, 4, 4, 4, 4, 3, 2, 1];
+  function pod(hw) {
+    return function (x, y) {
+      var d = Math.abs(Math.abs(x - CX) - 46);
+      if (y < 26 || y > 59) return false;
+      return d <= ((y < 28 || y > 57) ? Math.max(1, hw - 1) - 0.5 : hw - 0.5);
+    };
+  }
+
+  // z0-5: landing gear and ventral turret
+  for (z = 0; z <= 1; z++) { rectM(z, 22, 32, 29, 47, BLACK); S.rect(z, 48, 116, 55, 127, BLACK); }
+  for (z = 2; z <= 5; z++) {
+    rectM(z, 24, 38, 27, 41, z >= 4 ? STEEL : METAL);
+    S.rect(z, 50, 120, 53, 123, z >= 4 ? STEEL : METAL);
+  }
+  for (z = 2; z <= 3; z++) { rectM(z, 48, 94, 49, 108, BLACK); rectM(z, 48, 107, 49, 108, STEEL); }
+  for (z = 2; z <= 5; z++) disk(z, CX, 91, 5.2, z >= 4 ? METAL : DARK, DARK);
+
+  // z6-9: keel
+  for (z = 6; z <= 9; z++) {
+    (function (z) {
+      all(z, hull(z <= 7 ? 6 : 5, 12, 132), KEEL, function (x, y) {
+        if (z <= 7 && ((y >= 28 && y <= 31) || (y >= 68 && y <= 71) || (y >= 108 && y <= 111))) return GLOW;   // VTOL nozzles
+        if (z <= 7) return ((y >= 26 && y <= 33) || (y >= 66 && y <= 73) || (y >= 106 && y <= 113)) ? METAL : DARK;
+        return mul(HULL, z === 8 ? 0.36 : 0.42);
+      });
+    })(z);
+  }
+  // chin guns: housing and twin barrels
+  for (z = 8; z <= 9; z++) {
+    rectM(z, 43, 120, 48, 131, METAL);
+    rectM(z, 45, 126, 46, 145, DARK);
+    rectM(z, 45, 144, 46, 145, STEEL);
+  }
+  // under-wing missiles: round body, seeker at the front, band, fins at the back
+  function missile(x0, y0) {
+    for (var z = 8; z <= 11; z++) {
+      var n = (z === 8 || z === 11) ? 1 : 0;
+      rectM(z, x0 + n, y0, x0 + 3 - n, y0 + 27, z >= 10 ? WHITE : mul(WHITE, 0.72));
+      rectM(z, x0 + n, y0 + 24, x0 + 3 - n, y0 + 27, SEEK);
+      rectM(z, x0 + n, y0 + 12, x0 + 3 - n, y0 + 13, METAL);
+      if (!n) rectM(z, x0 - 1, y0, x0 + 4, y0 + 3, DARK);
+    }
+  }
+  missile(12, 40); missile(18, 52);
+
+  // z12-17: wings, drawn before the hull so the hull covers the roots
+  function wingTop(x, y) {
+    var u = Math.abs(x - CX) - 18, back = 44 - u * 0.5, front = 92 - u * 1.4;
+    if (u >= 24 && u < 28 && y >= back + 12 && y <= back + 15) return (y - Math.floor(back) - 12) % 4 < 2 && (Math.floor(u) % 4 < 2) ? GLOW : DARK;   // thruster quad
+    if (y < back + 7) return mul(HULL, 0.6);                              // flaps
+    if (y < back + 9) return DARK;                                        // hinge line
+    if (u >= 16 && u < 20) return ACC;                                    // livery band
+    if (u >= 22 && u < 24) return ACC;
+    if (u >= 4 && u < 10 && y >= front - 12 && y <= front - 9) return (Math.floor(u / 2) % 2) ? HAZ : BLACK;   // no-step marking
+    if (Math.floor(u) % 12 < 2) return mul(HULL, 0.74);                   // panel lines
+    return mul(HULL, 0.9);
+  }
+  function wingEdge(f) {
+    return function (x, y) {
+      var u = Math.abs(x - CX) - 18;
+      return y > 92 - u * 1.4 - 4 ? STEEL : mul(HULL, f);                 // bright leading edge
+    };
+  }
+  all(12, wingAt(true), mul(HULL, 0.5), mul(HULL, 0.38));
+  all(13, wingAt(false), mul(HULL, 0.56), mul(HULL, 0.42));
+  all(14, wingAt(false), mul(HULL, 0.66), wingEdge(0.5));
+  all(15, wingAt(false), mul(HULL, 0.76), wingEdge(0.56));
+  all(16, wingAt(false), wingTop, mul(HULL, 1.04));
+  all(17, wingAt(true), wingTop, mul(HULL, 1.1));
+  // wing cannons: housing, twin barrels ahead of the leading edge
+  for (z = 13; z <= 16; z++) rectM(z, 22, 64, 27, 78, z === 16 ? STEEL : METAL);
+  for (z = 14; z <= 15; z++) {
+    rectM(z, 22, 76, 23, 97, DARK); rectM(z, 26, 76, 27, 97, DARK);
+    rectM(z, 22, 96, 23, 97, STEEL); rectM(z, 26, 96, 27, 97, STEEL);
+  }
+
+  // z10-19: wingtip thruster pods with navigation lights
+  for (z = 10; z <= 19; z++) {
+    (function (z) {
+      var mid = z >= 13 && z <= 16;
+      all(z, pod(PODW[z - 10]), z >= 18 ? ACC : mul(HULL, 0.5 + 0.05 * (z - 10)), function (x, y) {
+        if (mid && y >= 56) return x > CX ? RED : GREEN;
+        if (mid && y <= 28) return GLOW;
+        if (y >= 40 && y <= 43) return METAL;
+        if ((z === 14 || z === 15) && y >= 33 && y <= 36) return BLACK;    // side thruster port
+        return z >= 18 ? ACC : null;
+      });
+    })(z);
+  }
+
+  // z8-27: engine nacelles
+  for (z = 8; z <= 27; z++) {
+    (function (z) {
+      var hw = nacHW(z), hot = z >= 12 && z <= 23, t = (z - 8) / 19;
+      var side = mul(HULL, 0.44 + 0.5 * t);
+      all(z, nacelle(hw), function (x, y) {
+        var d = Math.abs(Math.abs(x - CX) - 26);
+        if (y <= 5 && hot) return d <= hw - 5 ? LAMP : GLOW_HI;            // exhaust core
+        if (z >= 24 && y >= 38 && y <= 45) return (Math.floor(y / 2) % 2) ? RAD_A : RAD_B;   // vents
+        if (z === 27 && y >= 18 && y <= 33) return ACC;
+        if (z >= 25 && (y === 16 || y === 17 || y === 34 || y === 35)) return METAL;
+        return mul(HULL, 0.56 + 0.5 * t);
+      }, function (x, y) {
+        if (y <= 5) return hot ? GLOW : METAL;
+        if (y <= 9) return (z % 2) ? DARK : METAL;                         // nozzle petals
+        if (y >= 49) return hot ? BLACK : STEEL;                           // intake
+        if (y >= 47) return STEEL;                                         // intake lip
+        if ((y >= 16 && y <= 17) || (y >= 34 && y <= 35)) return METAL;
+        if ((z === 17 || z === 18) && y >= 20 && y <= 31) return ACC;      // livery line along the side
+        if (z >= 20 && z <= 25 && y >= 38 && y <= 45) return (Math.floor(y / 2) % 2) ? RAD_A : RAD_B;
+        if (z >= 26) return null;
+        return side;
+      });
+    })(z);
+  }
+
+  // z10-19: main hull, chamfered at the belly and the shoulder
+  var PROF = [4, 3, 2, 1, 0, 0, 0, 0, 1, 2];
+  for (z = 10; z <= 19; z++) {
+    (function (z) {
+      var t = (z - 10) / 9, base = mul(HULL, 0.58 + 0.42 * t);
+      all(z, hull(PROF[z - 10], 8, 147), function (x, y) {
+        var ax = Math.abs(x - CX);
+        if (y >= 136) return mul(HULL, 0.5 + 0.2 * t);                     // radome nose
+        if (z >= 18 && y >= 129 && y <= 135 && ax <= 3) return BLACK;      // anti-glare panel
+        if (z >= 18 && y % 18 < 2) return mul(HULL, 0.8);                  // panel lines
+        return base;
+      }, function (x, y) {
+        var ax = Math.abs(x - CX), door = y >= 84 && y <= 93;
+        if (y <= 11) {                                                     // rear cargo ramp
+          if (z <= 11 || z === 18) return (Math.floor(x / 3) % 2) ? HAZ : BLACK;
+          if (z === 19) return ACC;
+          if ((z === 15 || z === 16) && ax >= 9 && ax <= 12) return RED;   // tail lights
+          return ax <= 1 ? METAL : DARK;
+        }
+        if (y >= 144 && z >= 12 && z <= 15) return LAMP;                   // nose light
+        if (y >= 136) return mul(HULL, 0.36 + 0.3 * t);
+        if (door) {
+          if (z === 12 || z === 17) return HAZ;
+          if (z >= 13 && z <= 16) return (z === 15 && y >= 88 && y <= 89) ? PORT : DARK;
+        }
+        if ((z === 14 || z === 15) && y >= 24 && y <= 76 && y % 10 < 3) return PORT;          // portholes
+        if ((z === 15 || z === 16) && y >= 118 && y <= 121) return BLACK;                      // bow thrusters
+        if (z >= 13 && z <= 16 && y >= 14 && y <= 21) return (z % 2) ? RAD_A : RAD_B;          // heat vents
+        if (z === 18 && y <= 116) return ACC;                              // livery stripe along the shoulder
+        if (z === 19) return mul(HULL, 1.08);
+        return mul(HULL, 0.4 + 0.46 * t);
+      });
+    })(z);
+  }
+
+  // z20-23: upper deck
+  for (z = 20; z <= 23; z++) {
+    (function (z) {
+      all(z, hull(z <= 21 ? 4 : 5, 16, 100), function (x, y) {
+        var ax = Math.abs(x - CX);
+        if (z < 23) return mul(HULL, 0.92);
+        if (ax >= 6 && ax <= 10 && y >= 28 && y <= 57) return (y === 28 || y === 57) ? METAL : (Math.floor(y / 2) % 2) ? RAD_A : RAD_B;   // radiators
+        if (y >= 18 && y <= 21) return RAD_A;                              // intake grille
+        if (ax >= 6 && ax <= 11 && ((y >= 64 && y <= 65) || (y >= 68 && y <= 69))) return WHITE;   // hull markings
+        if (y % 14 < 2) return mul(HULL, 0.84);
+        return mul(HULL, 1.0);
+      }, function (x, y) {
+        if (z <= 21) return (y >= 40 && y <= 70 && y % 10 < 3 && z === 21) ? PORT : mul(HULL, 0.68);
+        if (z === 22) return mul(HULL, 0.9);
+        return (y >= 88 && y <= 95) ? ACC : mul(HULL, 1.14);
+      });
+    })(z);
+  }
+
+  // z20-27: canopy
+  var CAN = [[3, 100, 132], [3.5, 101, 131], [4, 102, 130], [4.5, 103, 128], [5, 104, 126], [6, 105, 124], [7, 106, 121], [8.5, 108, 118]];
+  for (z = 20; z <= 27; z++) {
+    (function (z) {
+      var c = CAN[z - 20], frame = mul(HULL, 0.86);
+      function strut(x, y) { return (y >= 113 && y <= 114) || (y >= 123 && y <= 124) || (z >= 24 && Math.abs(x - CX) <= 0.5); }
+      all(z, hull(c[0], c[1], c[2]), function (x, y) {
+        if (strut(x, y)) return frame;
+        return z >= 25 ? GLASS_HI : GLASS;
+      }, function (x, y) {
+        if (z === 20 || strut(x, y)) return frame;
+        return (z >= 24 && x < CX && y >= 106 && y <= 111) ? GLASS_HI : GLASS;   // glint
+      });
+    })(z);
+  }
+
+  // z24-27: dorsal spine, docking collar, whip antennas
+  for (z = 24; z <= 27; z++) {
+    (function (z) {
+      all(z, hull(13, 24, 88), function (x, y) {
+        if (z < 27) return mul(HULL, 1.0);
+        return (y >= 80 && y <= 83) ? BLACK : (y >= 44 && y <= 51) ? ACC : (y % 12 < 2) ? mul(HULL, 0.86) : mul(HULL, 1.08);
+      }, mul(HULL, z <= 25 ? 0.78 : z === 26 ? 0.96 : 1.18));
+    })(z);
+  }
+  disk(24, CX, 94, 5.2, DARK, HAZ);
+  disk(25, CX, 94, 5.2, METAL, HAZ);
+  disk(25, CX, 94, 2.2, DARK, DARK);
+  for (z = 24; z <= 31; z++) rectM(z, 39, 84, 40, 85, z >= 30 ? RED : METAL);
+
+  // z28-35: manned dorsal turret
+  for (z = 28; z <= 29; z++) disk(z, CX, 66, 7.2, METAL, DARK);
+  for (z = 31; z <= 32; z++) {
+    rectM(z, 47, 68, 48, 92, DARK); rectM(z, 47, 90, 48, 92, STEEL);
+    rectM(z, 46, 68, 49, 76, METAL);
+  }
+  var BALL = [5, 5.6, 5.6, 5];
+  for (z = 30; z <= 33; z++) disk(z, CX, 66, BALL[z - 30], STEEL, z >= 32 ? STEEL : METAL);
+  disk(34, CX, 66, 3.6, STEEL, METAL);
+  disk(35, CX, 66, 2.2, GLASS_HI, GLASS_HI);
+
+  // z28-44: sensor mast with dish and strobe
+  for (z = 28; z <= 33; z++) S.rect(z, 50, 30, 53, 33, METAL);
+  for (z = 34; z <= 42; z++) S.rect(z, 51, 31, 52, 32, STEEL);
+  disk(36, CX, 31.5, 5.2, STEEL, METAL);
+  disk(37, CX, 31.5, 4.2, mul(STEEL, 1.15), STEEL);
+  for (z = 43; z <= 44; z++) S.rect(z, 51, 31, 52, 32, LAMP);
+
+  // z28-47: canted tail fins on the nacelles
+  for (z = 28; z <= 47; z++) {
+    k = z - 28;
+    var xa = 24 - Math.floor(k / 3), y0 = Math.max(2, 6 - Math.floor(k / 4)), y1 = 34 - Math.floor(k * 1.3);
+    var fc = z >= 42 ? ACC : mul(HULL, 0.66 + 0.02 * k);
+    if (z <= 29) rectM(z, xa - 1, y0, xa + 3, y1 + 2, METAL);              // root fairing
+    rectM(z, xa, y0, xa + 2, y1, fc);
+    rectM(z, xa, y0 + 4, xa + 2, y0 + 5, z >= 42 ? fc : DARK);            // rudder hinge
+    rectM(z, xa, y1 - 1, xa + 2, y1, STEEL);                              // leading edge
+    if (z >= 46) {                                                        // tip lights
+      S.rect(z, xa, y0, xa + 2, y0 + 1, GREEN);
+      S.rect(z, SW - 3 - xa, y0, SW - 1 - xa, y0 + 1, RED);
+    }
+  }
+  S.emissive = [GLOW, GLOW_HI, PORT, RED, GREEN, LAMP];
+  return S;
+}
+
+// Records how far each slice's pixels reach from the slice centre, so drawSlice can skip the empty space around them.
+function measureSheet(sheet, w, h, count) {
+  var hw = Math.floor(w / 2), hh = Math.floor(h / 2), rad = new Uint16Array(count);
+  for (var z = 0; z < count; z++) {
+    var m = 0;
+    for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) {
+      if (!sheet.data[(y * sheet.width + z * w + x) * 4 + 3]) continue;
+      var dx = Math.max(Math.abs(x - hw), Math.abs(x + 1 - hw)), dy = Math.max(Math.abs(y - hh), Math.abs(y + 1 - hh));
+      if (dx * dx + dy * dy > m) m = dx * dx + dy * dy;
+    }
+    rad[z] = m ? Math.ceil(Math.sqrt(m)) + 1 : 0;
+  }
+  sheet.rad = rad;
+  return sheet;
 }
 
 // Draws one slice into buf (VIEW x VIEW RGBA) with nearest neighbor sampling.
@@ -448,7 +1015,7 @@ function buildApartment(scheme) {
 function drawSlice(buf, sheet, z, px, py, turn, squash, lift, flat) {
   var cos = Math.cos(turn), sin = Math.sin(turn);
   var hw = Math.floor(W / 2), hh = Math.floor(H / 2);
-  var R = Math.ceil(Math.sqrt(W * W + H * H) / 2) + 1;
+  var R = sheet.rad ? sheet.rad[z] : Math.ceil(Math.sqrt(W * W + H * H) / 2) + 1;
   var cy = py - lift;
   var y0 = Math.max(0, Math.floor(cy - R * squash)), y1 = Math.min(VIEW - 1, Math.ceil(cy + R * squash));
   var x0 = Math.max(0, px - R), x1 = Math.min(VIEW - 1, px + R);
@@ -466,6 +1033,7 @@ function drawSlice(buf, sheet, z, px, py, turn, squash, lift, flat) {
         if (buf[di + 3] === 0) { buf[di] = flat[0]; buf[di + 1] = flat[1]; buf[di + 2] = flat[2]; buf[di + 3] = flat[3]; }
       } else {
         buf[di] = sheet.data[si]; buf[di + 1] = sheet.data[si + 1]; buf[di + 2] = sheet.data[si + 2]; buf[di + 3] = 255;
+        if (HEIGHT) HEIGHT[y * VIEW + x] = z + 1;
       }
     }
   }
@@ -501,9 +1069,84 @@ function outlineStack(buf, c) {
     buf[j] = c[0]; buf[j + 1] = c[1]; buf[j + 2] = c[2]; buf[j + 3] = 254;
   }
 }
+// Lighting pass, run on the finished frame. height holds slice index + 1 for every drawn pixel, 0 where empty.
+// The light comes from compass angle lightDeg in screen space (0 = top of the screen, 90 = right).
+// Tops stay at full brightness. Walls get brighter when the light is in front and darker when it is behind.
+// A pixel with something taller between it and the light is shaded; an edge that drops off toward the light is lit.
+// Colours listed in sheet.emissive stay full bright and spill a soft halo onto the hull and the ground.
+// k scales the sampling distances and the halo for higher resolution sheets (1 for small objects, 2 for the gunship).
+function lightStack(buf, height, sheet, lightDeg, k) {
+  k = k || 1;
+  var a = lightDeg * Math.PI / 180, lx = Math.sin(a), ly = -Math.cos(a);
+  var sx = lx > 0.2 ? 1 : lx < -0.2 ? -1 : 0, wx = Math.abs(lx);
+  var em = sheet.emSet;
+  if (!em) {
+    em = sheet.emSet = {};
+    (sheet.emissive || []).forEach(function (c) {
+      var t = new Uint8ClampedArray(3); t[0] = c[0]; t[1] = c[1]; t[2] = c[2];
+      em[t[0] << 16 | t[1] << 8 | t[2]] = 1;
+    });
+  }
+  function hAt(x, y) { return (x < 0 || y < 0 || x >= VIEW || y >= VIEW) ? 0 : height[y * VIEW + x]; }
+  var acc = new Float32Array(VIEW * VIEW * 3), lamps = [];
+  var x, y, p, i;
+  for (y = 0; y < VIEW; y++) for (x = 0; x < VIEW; x++) {
+    p = y * VIEW + x; i = p * 4;
+    if (buf[i + 3] !== 255) continue;
+    if (em[buf[i] << 16 | buf[i + 1] << 8 | buf[i + 2]]) { lamps.push(p); continue; }
+    var h = height[p], f = 1;
+    if (hAt(x, y - 1) > h) f = 0.82 + 0.3 * ly;                        // wall: lit from the front, dim from behind
+    if (sx !== 0) {
+      var toward = hAt(x + sx * 2 * k, y), away = hAt(x - sx * 2 * k, y);
+      if (toward >= h + 2 * k) f *= 1 - 0.38 * wx;                     // in the shade of something taller
+      else if (toward < h - k) f *= 1 + 0.28 * wx;                     // edge facing the light
+      if (away < h - k && toward >= h - k) f *= 1 - 0.16 * wx;         // edge facing away
+    }
+    if (ly < -0.2 && hAt(x, y - 3 * k) > h + 4 * k) f *= 1 + 0.3 * ly; // cast shadow from a taller part behind
+    if (ly > 0.2 && hAt(x, y + 3 * k) > h + k) f *= 1 - 0.3 * ly;      // or from one in front
+    f *= 0.92;
+    buf[i] = buf[i] * f * 0.95; buf[i + 1] = buf[i + 1] * f; buf[i + 2] = Math.min(255, buf[i + 2] * f * 1.06);
+  }
+  // halo: each lamp pixel adds a little of its colour to everything within about 4 px
+  var R = 4 * k, RR = R + 0.3, gain = 0.085 / (k * k);
+  for (var n = 0; n < lamps.length; n++) {
+    p = lamps[n]; i = p * 4;
+    var px = p % VIEW, py = (p - px) / VIEW, r = buf[i], g = buf[i + 1], b = buf[i + 2];
+    for (var dy = -R; dy <= R; dy++) for (var dx = -R; dx <= R; dx++) {
+      var d = Math.sqrt(dx * dx + dy * dy);
+      if (d > RR || d === 0) continue;
+      var qx = px + dx, qy = py + dy;
+      if (qx < 0 || qy < 0 || qx >= VIEW || qy >= VIEW) continue;
+      var w = (1 - d / RR); w = w * w * gain;
+      var q = (qy * VIEW + qx) * 3;
+      acc[q] += r * w; acc[q + 1] += g * w; acc[q + 2] += b * w;
+    }
+  }
+  for (p = 0; p < VIEW * VIEW; p++) {
+    var m = Math.max(acc[p * 3], acc[p * 3 + 1], acc[p * 3 + 2]);
+    if (m < 3) continue;
+    i = p * 4;
+    if (buf[i + 3] >= 254) {                                           // hull or outline: add the light
+      if (buf[i + 3] === 255 && em[buf[i] << 16 | buf[i + 1] << 8 | buf[i + 2]]) continue;
+      buf[i] = Math.min(255, buf[i] + acc[p * 3]); buf[i + 1] = Math.min(255, buf[i + 1] + acc[p * 3 + 1]);
+      buf[i + 2] = Math.min(255, buf[i + 2] + acc[p * 3 + 2]);
+    } else if (buf[i + 3] === 0) {                                     // empty: a translucent glow over the ground
+      buf[i] = acc[p * 3] / m * 255; buf[i + 1] = acc[p * 3 + 1] / m * 255; buf[i + 2] = acc[p * 3 + 2] / m * 255;
+      buf[i + 3] = Math.min(170, m * 1.5);
+    }
+  }
+}
 //CORE-END
 
 var OBJECTS = [
+  {id: "breakwater", name: "Breakwater", w: 208, h: 304, count: 48, view: 400, pos: [200,236], maxSpacing: 1.5, shadowSlice: 12, sheetScale: 1, lightScale: 3, build: buildBreakwater, paintLabel: "Livery", note: "The bow is the bottom edge of each slice.", paints: [{name: "Bone and navy", a: [58,80,116], b: [198,188,168], glow: [255,214,140]},
+      {name: "Graphite and rust", a: [146,72,44], b: [72,76,86], glow: [255,170,90]},
+      {name: "Frost and crimson", a: [150,40,50], b: [206,212,220], glow: [160,230,255]},
+      {name: "Olive and sand", a: [176,160,120], b: [92,102,82], glow: [255,220,150]}]},
+  {id: "gunship", name: "Gunship", w: 104, h: 152, count: 48, view: 288, pos: [144,190], maxSpacing: 2, shadowSlice: 14, sheetScale: 1, lightScale: 2, build: buildGunship, paintLabel: "Livery", note: "The ship's nose is the bottom edge of each slice.", paints: [{name: "Void black and ice blue", a: [96,170,230], b: [46,52,68], glow: [90,210,255]},
+      {name: "Midnight navy and crimson", a: [200,40,60], b: [38,48,78], glow: [255,96,72]},
+      {name: "Gunmetal and violet", a: [150,110,255], b: [58,62,80], glow: [190,130,255]},
+      {name: "Deep teal and amber", a: [240,170,50], b: [30,60,68], glow: [60,240,210]}]},
   {
     id: "apartment", name: "Apartment", w: 36, h: 36, count: 56, view: 160, pos: [80, 136],
     maxSpacing: 2, shadowSlice: 0, sheetScale: 2, build: buildApartment, paintLabel: "Neon",
@@ -527,17 +1170,17 @@ var OBJECTS = [
   }
 ];
 
-var state = { obj: 0, turn: 0, squash: 0.75, spacing: 1, outline: true, spin: true, paint: 0 };
+var state = { obj: 0, turn: 0, squash: 0.75, spacing: 1, outline: true, spin: true, paint: 0, light: true, lightDir: 315 };
 var reduceMotion = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 if (reduceMotion) { state.spin = false; state.turn = 35; }
 
 var $ = function (id) { return document.getElementById(id); };
 var view = $("view"), vctx = view.getContext("2d");
 var sheetCanvas = $("sheet"), sctx = sheetCanvas.getContext("2d");
-var frame = null, sheet = null, obj = null;
+var frame = null, sheet = null, obj = null, heightBuf = null;
 
 function paintSheet() {
-  sheet = obj.build(obj.paints[state.paint]);
+  sheet = measureSheet(obj.build(obj.paints[state.paint]), obj.w, obj.h, obj.count);
   var img = sctx.createImageData(sheet.width, sheet.height);
   img.data.set(sheet.data);
   sctx.putImageData(img, 0, 0);
@@ -580,6 +1223,7 @@ function setObject(i) {
   W = obj.w; H = obj.h; COUNT = obj.count; VIEW = obj.view;
   view.width = VIEW; view.height = VIEW;
   frame = vctx.createImageData(VIEW, VIEW);
+  heightBuf = new Uint8Array(VIEW * VIEW);
   var sp = $("spacing");
   sp.max = obj.maxSpacing;
   if (state.spacing > obj.maxSpacing) { state.spacing = obj.maxSpacing; }
@@ -611,17 +1255,22 @@ function render() {
   var buf = frame.data;
   buf.fill(0);
   var turn = state.turn * Math.PI / 180;
+  HEIGHT = state.light ? heightBuf : null;
+  if (HEIGHT) HEIGHT.fill(0);
   drawStack(buf, sheet, obj.pos[0], obj.pos[1], turn, state.squash, state.spacing);
+  HEIGHT = null;
   var b = bounds(buf);
-  if (state.outline) outlineStack(buf, [16, 18, 24]);
+  if (state.outline) outlineStack(buf, [6, 8, 14]);
+  if (state.light) lightStack(buf, heightBuf, sheet, state.lightDir, obj.lightScale || 1);
   // ground shadow: the footprint, offset, only where nothing else was drawn
-  drawSlice(buf, sheet, obj.shadowSlice, obj.pos[0] + 3, obj.pos[1] + 3, turn, state.squash, 0, [0, 0, 0, 70]);
+  drawSlice(buf, sheet, obj.shadowSlice, obj.pos[0] + 3, obj.pos[1] + 3, turn, state.squash, 0, [0, 0, 0, 120]);
   vctx.putImageData(frame, 0, 0);
   $("readout").textContent = "covers " + b.w + " x " + b.h + " px";
   $("turn").value = Math.round(state.turn) % 360;
   $("turnOut").textContent = (Math.round(state.turn) % 360) + "°";
   $("squashOut").textContent = state.squash.toFixed(2);
   $("spacingOut").textContent = state.spacing + " px";
+  $("lightOut").textContent = state.lightDir + "°";
 }
 
 var last = 0;
@@ -647,11 +1296,13 @@ $("turn").addEventListener("input", function (e) { setSpin(false); state.turn = 
 $("squash").addEventListener("input", function (e) { state.squash = +e.target.value; render(); });
 $("spacing").addEventListener("input", function (e) { state.spacing = +e.target.value; render(); });
 $("outline").addEventListener("change", function (e) { state.outline = e.target.checked; render(); });
+$("light").addEventListener("change", function (e) { state.light = e.target.checked; render(); });
+$("lightDir").addEventListener("input", function (e) { state.lightDir = +e.target.value; render(); });
 $("spin").addEventListener("click", function () { setSpin(!state.spin); });
 $("reset").addEventListener("click", function () {
   setSpin(false);
-  state.turn = 0; state.squash = 0.75; state.spacing = 1; state.outline = true;
-  $("squash").value = 0.75; $("spacing").value = 1; $("outline").checked = true;
+  state.turn = 0; state.squash = 0.75; state.spacing = 1; state.outline = true; state.light = true; state.lightDir = 315;
+  $("squash").value = 0.75; $("spacing").value = 1; $("outline").checked = true; $("light").checked = true; $("lightDir").value = 315;
   render();
 });
 
